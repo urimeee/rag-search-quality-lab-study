@@ -1,0 +1,16 @@
+# 환경변수 (API 키 포함 — 절대 올리지 않음)
+.env
+
+# 이력서 원본 PDF (개인정보)
+*.pdf
+
+# FAISS 인덱스 (이력서 임베딩 데이터 — 개인정보)
+faiss_index/
+
+# macOS
+.DS_Store
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
