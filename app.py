@@ -5,7 +5,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from rag.embedder import load_vectorstore, get_relevant_context
-from rag.interviewer import search_and_summarize
+from rag.interviewer import chat_with_resume
 from rag.experimenter import preview_chunks, search_with_scores
 
 st.set_page_config(page_title="RAG 실험실", page_icon="🔬", layout="wide")
@@ -18,7 +18,7 @@ def init_session():
         "vectorstore": None,
         "resume_text": "",
         "pdf_loaded": False,
-        "search_history": [],  # [{query, summary, chunks}]
+        "chat_messages": [],  # [{role, content}] — 표시용 & API 히스토리
     }
     for key, val in defaults.items():
         if key not in st.session_state:
@@ -164,47 +164,46 @@ with tab_lab:
 
 
 # ════════════════════════════════════════════════════════════════════
-# TAB 2: 이력서 검색
+# TAB 2: 이력서 Q&A 채팅
 # ════════════════════════════════════════════════════════════════════
 with tab_search:
-    st.title("이력서 검색")
-    st.caption("궁금한 내용을 입력하면 이력서에서 관련 내용을 찾아 정리해드립니다.")
+    st.title("이력서 Q&A")
+    st.caption("이력서 내용을 기반으로 자유롭게 질문하세요. 대화 맥락을 유지하며 답변합니다.")
 
-    query = st.text_input(
-        "검색어 입력",
-        placeholder="예: Python 관련 경험, 팀 리더십 경험, 데이터 분석 프로젝트...",
-        key="search_query",
-    )
-
-    col1, col2 = st.columns([1, 5])
-    with col1:
-        search_btn = st.button("🔍 검색", type="primary", disabled=not query.strip())
-    with col2:
-        top_k_search = st.slider("참고할 청크 수", min_value=1, max_value=8, value=4, step=1, key="search_topk")
-
-    if search_btn and query.strip():
-        with st.spinner("이력서에서 관련 내용 검색 중..."):
-            context = get_relevant_context(st.session_state.vectorstore, query, k=top_k_search)
-            summary = search_and_summarize(query, context, API_KEY)
-
-        result = {"query": query, "summary": summary, "context": context}
-        st.session_state.search_history.insert(0, result)
-
-    # 검색 결과 표시
-    if st.session_state.search_history:
-        for i, item in enumerate(st.session_state.search_history):
-            if i == 0:
-                st.subheader(f"검색: {item['query']}")
-                st.markdown(item["summary"])
-                with st.expander("참고한 이력서 원문 보기"):
-                    st.text(item["context"])
-                st.divider()
-            else:
-                with st.expander(f"이전 검색: {item['query']}"):
-                    st.markdown(item["summary"])
-
-        if st.button("검색 기록 초기화"):
-            st.session_state.search_history = []
+    # 대화 초기화 버튼
+    if st.session_state.chat_messages:
+        if st.button("🗑️ 대화 초기화"):
+            st.session_state.chat_messages = []
             st.rerun()
-    else:
-        st.info("위 검색창에 궁금한 내용을 입력하세요.")
+
+    # 기존 대화 표시
+    for msg in st.session_state.chat_messages:
+        with st.chat_message(msg["role"]):
+            st.markdown(msg["content"])
+
+    # 채팅 입력
+    user_input = st.chat_input("이력서에 대해 궁금한 것을 질문하세요...")
+
+    if user_input:
+        # 사용자 메시지 즉시 표시
+        with st.chat_message("user"):
+            st.markdown(user_input)
+
+        # 이력서에서 관련 청크 검색
+        context = get_relevant_context(st.session_state.vectorstore, user_input, k=4)
+
+        # AI 응답 생성 및 표시
+        with st.chat_message("assistant"):
+            with st.spinner("이력서 검색 중..."):
+                response = chat_with_resume(
+                    history=st.session_state.chat_messages,
+                    new_query=user_input,
+                    resume_context=context,
+                    api_key=API_KEY,
+                )
+            st.markdown(response)
+
+        # 대화 기록 저장 (표시용 내용만 — LLM에 보낸 augmented query 아님)
+        st.session_state.chat_messages.append({"role": "user", "content": user_input})
+        st.session_state.chat_messages.append({"role": "assistant", "content": response})
+        st.rerun()
