@@ -5,27 +5,20 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from rag.embedder import load_vectorstore, get_relevant_context
-from rag.interviewer import generate_questions, evaluate_answer, generate_final_feedback
+from rag.interviewer import search_and_summarize
 from rag.experimenter import preview_chunks, search_with_scores
 
-st.set_page_config(page_title="AI 면접관 + RAG 실험실", page_icon="🎙️", layout="wide")
-
-MAX_ANSWERS_PER_QUESTION = 2
+st.set_page_config(page_title="RAG 실험실", page_icon="🔬", layout="wide")
 
 API_KEY = os.getenv("OPENAI_API_KEY", "")
 
 
 def init_session():
     defaults = {
-        "stage": "setup",
         "vectorstore": None,
         "resume_text": "",
-        "jd": "",
-        "questions": [],
-        "current_q_idx": 0,
-        "answers_for_current_q": 0,
-        "messages": [],
         "pdf_loaded": False,
+        "search_history": [],  # [{query, summary, chunks}]
     }
     for key, val in defaults.items():
         if key not in st.session_state:
@@ -48,7 +41,6 @@ with st.sidebar:
         st.error(".env 파일에 OPENAI_API_KEY가 설정되지 않았습니다.")
         st.stop()
 
-    # 저장된 인덱스 자동 로드
     if not st.session_state.pdf_loaded:
         saved = load_vectorstore(API_KEY)
         if saved:
@@ -67,134 +59,15 @@ with st.sidebar:
 
 
 # ── 탭 구성 ───────────────────────────────────────────────────────────────────
-tab_lab, tab_interview = st.tabs(["🔬 RAG 실험실", "🎙️ 면접 연습"])
+tab_lab, tab_search = st.tabs(["🔬 RAG 실험실", "🔍 이력서 검색"])
 
 
 # ════════════════════════════════════════════════════════════════════
-# TAB 1: 면접 연습
-# ════════════════════════════════════════════════════════════════════
-with tab_interview:
-    st.title("AI 면접관")
-    st.caption("이력서 + JD 기반 맞춤형 모의 면접")
-
-    if st.session_state.stage == "setup":
-        col1, col2 = st.columns(2)
-        with col1:
-            st.info("**1단계**\n\n왼쪽 사이드바에서 이력서 PDF 업로드")
-        with col2:
-            st.info("**2단계**\n\n아래 JD 입력 후 면접 시작")
-
-        jd_text = st.text_area(
-            "📋 채용공고 (JD) 입력",
-            placeholder="채용공고 전체 내용을 붙여넣으세요...",
-            height=250,
-        )
-
-        can_start = st.session_state.pdf_loaded and jd_text.strip()
-        if st.button("🚀 면접 시작", type="primary", disabled=not can_start):
-            st.session_state.jd = jd_text.strip()
-            with st.spinner("맞춤 면접 질문 생성 중..."):
-                context = get_relevant_context(st.session_state.vectorstore, jd_text, k=8)
-                questions = generate_questions(jd_text, context, API_KEY)
-            st.session_state.questions = questions
-            st.session_state.stage = "interviewing"
-            st.session_state.current_q_idx = 0
-            st.session_state.answers_for_current_q = 0
-            st.session_state.messages = []
-
-            opening = (
-                "안녕하세요! 오늘 면접에 지원해 주셔서 감사합니다. "
-                "이력서와 채용공고를 검토했으며, 총 5개의 질문을 드릴 예정입니다.\n\n"
-                f"**[1/5] {questions[0]}**"
-            )
-            st.session_state.messages.append({"role": "assistant", "content": opening})
-            st.rerun()
-
-    elif st.session_state.stage in ("interviewing", "finished"):
-        total = len(st.session_state.questions)
-        current = min(st.session_state.current_q_idx + 1, total)
-        if st.session_state.stage == "interviewing":
-            st.progress(current / total, text=f"진행률: {current}/{total} 질문")
-
-        for msg in st.session_state.messages:
-            with st.chat_message(msg["role"]):
-                st.markdown(msg["content"])
-
-        if st.session_state.stage == "interviewing":
-            user_input = st.chat_input("답변을 입력하세요...")
-            if user_input:
-                st.session_state.messages.append({"role": "user", "content": user_input})
-                st.session_state.answers_for_current_q += 1
-
-                current_q = st.session_state.questions[st.session_state.current_q_idx]
-                context = get_relevant_context(st.session_state.vectorstore, current_q, k=5)
-
-                with st.spinner("면접관이 검토 중..."):
-                    response = evaluate_answer(
-                        question=current_q,
-                        answer=user_input,
-                        resume_context=context,
-                        history=st.session_state.messages,
-                        api_key=API_KEY,
-                    )
-
-                move_next = (
-                    "다음 질문으로 넘어가겠습니다" in response
-                    or st.session_state.answers_for_current_q >= MAX_ANSWERS_PER_QUESTION
-                )
-                st.session_state.messages.append({"role": "assistant", "content": response})
-
-                if move_next:
-                    st.session_state.current_q_idx += 1
-                    st.session_state.answers_for_current_q = 0
-
-                    if st.session_state.current_q_idx < total:
-                        next_q = st.session_state.questions[st.session_state.current_q_idx]
-                        idx = st.session_state.current_q_idx + 1
-                        st.session_state.messages.append(
-                            {"role": "assistant", "content": f"**[{idx}/{total}] {next_q}**"}
-                        )
-                    else:
-                        with st.spinner("종합 피드백 생성 중..."):
-                            all_context = get_relevant_context(
-                                st.session_state.vectorstore, st.session_state.jd, k=8
-                            )
-                            feedback = generate_final_feedback(
-                                jd=st.session_state.jd,
-                                resume_context=all_context,
-                                history=st.session_state.messages,
-                                api_key=API_KEY,
-                            )
-                        st.session_state.messages.append(
-                            {"role": "assistant", "content": "수고하셨습니다! 종합 피드백을 드립니다.\n\n---\n\n" + feedback}
-                        )
-                        st.session_state.stage = "finished"
-                st.rerun()
-
-        elif st.session_state.stage == "finished":
-            st.success("면접이 완료되었습니다!")
-            transcript = "\n\n".join(
-                f"[{'면접관' if m['role'] == 'assistant' else '지원자'}]\n{m['content']}"
-                for m in st.session_state.messages
-            )
-            st.download_button(
-                label="📥 면접 내용 다운로드",
-                data=transcript,
-                file_name="interview_transcript.txt",
-                mime="text/plain",
-            )
-
-
-# ════════════════════════════════════════════════════════════════════
-# TAB 2: RAG 실험실
+# TAB 1: RAG 실험실
 # ════════════════════════════════════════════════════════════════════
 with tab_lab:
     st.title("RAG 실험실")
     st.caption("청킹 전략과 검색 파라미터가 검색 품질에 미치는 영향을 직접 실험합니다.")
-
-    if not st.session_state.pdf_loaded:
-        st.warning("사이드바에서 이력서 PDF를 먼저 업로드하세요.")
-        st.stop()
 
     # ── 실험 1: 청킹 시각화 ──────────────────────────────────────────
     st.subheader("실험 1. Chunk Size & Overlap — 청킹 전략 비교")
@@ -252,7 +125,7 @@ with tab_lab:
         st.markdown(f"**'{query_input}'** 쿼리로 상위 **{top_k}개** 청크 검색 결과:")
 
         for r in results:
-            score_bar = min(r["score"] / 2.0, 1.0)  # L2 거리를 0~1 범위로 정규화 (시각화용)
+            score_bar = min(r["score"] / 2.0, 1.0)
             relevance = "높음" if r["score"] < 0.5 else "중간" if r["score"] < 1.0 else "낮음"
 
             with st.expander(f"**[{r['rank']}위]** 유사도 점수: `{r['score']:.4f}` | 관련도: {relevance} | `{r['length']}자`"):
@@ -288,3 +161,50 @@ with tab_lab:
 
     > 위 실험 2에서 쿼리를 입력하고 검색된 청크를 직접 눈으로 확인하는 것이 Retrieval 품질 분석의 첫 단계입니다.
     """)
+
+
+# ════════════════════════════════════════════════════════════════════
+# TAB 2: 이력서 검색
+# ════════════════════════════════════════════════════════════════════
+with tab_search:
+    st.title("이력서 검색")
+    st.caption("궁금한 내용을 입력하면 이력서에서 관련 내용을 찾아 정리해드립니다.")
+
+    query = st.text_input(
+        "검색어 입력",
+        placeholder="예: Python 관련 경험, 팀 리더십 경험, 데이터 분석 프로젝트...",
+        key="search_query",
+    )
+
+    col1, col2 = st.columns([1, 5])
+    with col1:
+        search_btn = st.button("🔍 검색", type="primary", disabled=not query.strip())
+    with col2:
+        top_k_search = st.slider("참고할 청크 수", min_value=1, max_value=8, value=4, step=1, key="search_topk")
+
+    if search_btn and query.strip():
+        with st.spinner("이력서에서 관련 내용 검색 중..."):
+            context = get_relevant_context(st.session_state.vectorstore, query, k=top_k_search)
+            summary = search_and_summarize(query, context, API_KEY)
+
+        result = {"query": query, "summary": summary, "context": context}
+        st.session_state.search_history.insert(0, result)
+
+    # 검색 결과 표시
+    if st.session_state.search_history:
+        for i, item in enumerate(st.session_state.search_history):
+            if i == 0:
+                st.subheader(f"검색: {item['query']}")
+                st.markdown(item["summary"])
+                with st.expander("참고한 이력서 원문 보기"):
+                    st.text(item["context"])
+                st.divider()
+            else:
+                with st.expander(f"이전 검색: {item['query']}"):
+                    st.markdown(item["summary"])
+
+        if st.button("검색 기록 초기화"):
+            st.session_state.search_history = []
+            st.rerun()
+    else:
+        st.info("위 검색창에 궁금한 내용을 입력하세요.")

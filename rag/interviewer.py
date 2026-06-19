@@ -1,74 +1,24 @@
-import json
 from openai import OpenAI
-from rag.prompts import (
-    QUESTION_GENERATION_PROMPT,
-    EVALUATION_PROMPT,
-    FINAL_FEEDBACK_PROMPT,
-)
 
 
 def _client(api_key: str) -> OpenAI:
     return OpenAI(api_key=api_key)
 
 
-def generate_questions(jd: str, resume_context: str, api_key: str) -> list[str]:
-    prompt = QUESTION_GENERATION_PROMPT.format(
-        resume_context=resume_context,
-        jd=jd,
-    )
+def search_and_summarize(query: str, resume_context: str, api_key: str) -> str:
+    prompt = f"""면접관이 지원자에 대해 다음을 알고 싶어합니다: "{query}"
+
+아래는 지원자 이력서에서 관련 내용을 검색한 결과입니다:
+
+{resume_context}
+
+위 내용을 바탕으로 면접관이 바로 활용할 수 있도록 핵심만 명확하게 정리해주세요.
+이력서에 없는 내용은 절대 추가하지 마세요.
+내용이 없다면 "이력서에서 관련 내용을 찾을 수 없습니다."라고 답하세요."""
+
     response = _client(api_key).chat.completions.create(
         model="gpt-4o",
         messages=[{"role": "user", "content": prompt}],
-        response_format={"type": "json_object"},
-        temperature=0.7,
-    )
-    result = json.loads(response.choices[0].message.content)
-    return result["questions"]
-
-
-def evaluate_answer(
-    question: str,
-    answer: str,
-    resume_context: str,
-    history: list[dict],
-    api_key: str,
-) -> str:
-    history_text = "\n".join(
-        f"{'면접관' if m['role'] == 'assistant' else '지원자'}: {m['content']}"
-        for m in history[-6:]
-    )
-    prompt = EVALUATION_PROMPT.format(
-        resume_context=resume_context,
-        question=question,
-        answer=answer,
-        history=history_text,
-    )
-    response = _client(api_key).chat.completions.create(
-        model="gpt-4o",
-        messages=[{"role": "user", "content": prompt}],
-        temperature=0.7,
-    )
-    return response.choices[0].message.content
-
-
-def generate_final_feedback(
-    jd: str,
-    resume_context: str,
-    history: list[dict],
-    api_key: str,
-) -> str:
-    history_text = "\n".join(
-        f"{'면접관' if m['role'] == 'assistant' else '지원자'}: {m['content']}"
-        for m in history
-    )
-    prompt = FINAL_FEEDBACK_PROMPT.format(
-        resume_context=resume_context,
-        jd=jd,
-        history=history_text,
-    )
-    response = _client(api_key).chat.completions.create(
-        model="gpt-4o",
-        messages=[{"role": "user", "content": prompt}],
-        temperature=0.6,
+        temperature=0.3,
     )
     return response.choices[0].message.content
